@@ -64,32 +64,32 @@ def errorfill(x, y, y_err_pos, y_err_neg=None, color=None, alpha_fill=0.25, ax=N
     y_min = np.array(y) - np.array(y_err_neg)
     y_max = np.array(y) + np.array(y_err_pos)
     if color is None:
-        l = ax.plot(x, y, **kwargs)
-        color = l[0].get_color()
+        line = ax.plot(x, y, **kwargs)
+        color = line[0].get_color()
     else:
-        l = ax.plot(x, y, color=color, **kwargs)
+        line = ax.plot(x, y, color=color, **kwargs)
 
     facecolor = mpl.colors.colorConverter.to_rgba(color, alpha=alpha_fill)
     edgecolor = (0, 0, 0, 0)
     ax.fill_between(x, y_max, y_min, edgecolor=edgecolor, facecolor=facecolor)
 
-    return l
+    return line
 
 
 class BenchmarkIterator:
-    def __init__(self, num_burnin=1, num_iterations_min=7, t_max=1):
+    def __init__(self, num_burnin=1, num_iterations_min=7, t_min=1):
         self.num_burnin = num_burnin
-        self.num_iterations_min=num_iterations_min
-        self.t_max = t_max
+        self.num_iterations_min = num_iterations_min
+        self.t_min = t_min
 
+        self.reset()
+
+    def reset(self):
         self.num_iterations = 0
 
         self.t_iterations = []
         self.t_setup = None
 
-        self.start()
-
-    def start(self):
         self.benchmark_start = time.perf_counter()
         self.t_start = time.perf_counter()
 
@@ -107,10 +107,31 @@ class BenchmarkIterator:
             if self.num_iterations > self.num_burnin:
                 self.t_iterations.append(t - self.t_start)
 
-            if t - self.benchmark_start > self.t_max and len(self.t_iterations) >= self.num_iterations_min:
+            if t - self.benchmark_start > self.t_min and self.num_iterations >= (self.num_iterations_min + self.num_burnin):
+                self.t_iterations = np.array(self.t_iterations)
+
                 raise StopIteration()
 
         self.t_start = time.perf_counter()
+
+    @property
+    def min(self):
+        return np.min(self.t_iterations)
+
+    @property
+    def max(self):
+        return np.max(self.t_iterations)
+
+    @property
+    def mean(self):
+        return np.mean(self.t_iterations)
+
+    @property
+    def median(self):
+        return np.mean(self.t_iterations)
+
+    def quantile(self, q):
+        return np.quantile(self.t_iterations, q)
 
 
 class FixedIterator:
@@ -130,12 +151,11 @@ class FixedIterator:
 
 
 class Benchmark:
-    def __init__(self, title, parameter_name, parameter_values, t_min=1, num_burnin=5):
+    def __init__(self, title, parameter_name, parameter_values, **kwargs):
         self.title = title
         self.parameter_name = parameter_name
         self.parameter_values = parameter_values
-        self.t_min = t_min
-        self.num_burnin = num_burnin
+        self.kwargs = kwargs
 
         self.runs = {}
 
@@ -148,29 +168,28 @@ class Benchmark:
             print(params)
 
             # Perform the benchmark.
-            it = BenchmarkIterator(self.num_burnin, t_max=self.t_min)
+            it = BenchmarkIterator(**self.kwargs)
             func(it, **params)
 
-            run_result = {
-                'time_setup': it.t_setup,
-                'time_iterations' : np.array(it.t_iterations),
-                'plot_kwargs': plot_kwargs,
-            }
-            self.runs[label].append(run_result)
+            self.runs[label].append(it)
 
-    def plot(self):
-        for func_name, result in self.runs.items():
-            t = [arg_res['time_iterations'] for arg_res in result]
+    def plot(self, relative_to=None):
+        if relative_to is not None:
+            ref_run = self.runs[relative_to]
+            norm = np.array([res.median for res in ref_run])
+        else:
+            norm = 1
 
+        for func_name, results in self.runs.items():
             x = self.parameter_values
-            y = [np.median(tt) for tt in t]
-            y_min = [np.quantile(tt, 0.5 - 0.341) for tt in t]
-            y_max = [np.quantile(tt, 0.5 + 0.341) for tt in t]
+            y = [res.median for res in results]
+            y_min = [res.quantile(0.5 - 0.341) for res in results]
+            y_max = [res.quantile(0.5 + 0.341) for res in results]
 
             x = np.array(x)
-            y = np.array(y)
-            y_min = np.array(y_min)
-            y_max = np.array(y_max)
+            y = np.array(y) / norm
+            y_min = np.array(y_min) / norm
+            y_max = np.array(y_max) / norm
 
             errorfill(x, y, y_max - y, y - y_min, label=func_name)
 
@@ -179,6 +198,11 @@ class Benchmark:
         plt.xscale('log')
         plt.yscale('log')
         plt.legend()
-        plt.grid(':', c='0.5')
+        plt.grid(ls=':', which='major', c='0.4')
+        plt.grid(ls=':', which='minor', c='0.7')
         plt.xlabel(self.parameter_name)
-        plt.ylabel('Time [s]')
+
+        if relative_to is None:
+            plt.ylabel('Time [s]')
+        else:
+            plt.ylabel(f'Time relative to {relative_to}')
