@@ -128,7 +128,7 @@ class BenchmarkIterator:
 
     @property
     def median(self):
-        return np.mean(self.t_iterations)
+        return np.median(self.t_iterations)
 
     def quantile(self, q):
         return np.quantile(self.t_iterations, q)
